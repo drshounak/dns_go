@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -37,9 +36,8 @@ var (
 		dns.TypeNSEC, dns.TypeNSEC3, dns.TypeRRSIG, dns.TypeOPT, dns.TypeTLSA,
 	)
 
-	dnsCache    *cache.Cache
-	ipLimiters  = sync.Map{}
-	logger      *log.Logger
+	dnsCache   *cache.Cache
+	ipLimiters = sync.Map{}
 )
 
 type RateLimiterWithLastUse struct {
@@ -50,9 +48,6 @@ type RateLimiterWithLastUse struct {
 func init() {
 	// Initialize cache with 5 minutes default expiration and 10 minutes cleanup interval
 	dnsCache = cache.New(5*time.Minute, 10*time.Minute)
-
-	// Initialize logger
-	logger = log.New(log.Writer(), "DNS_API: ", log.Ldate|log.Ltime|log.Lshortfile)
 }
 
 func main() {
@@ -75,9 +70,8 @@ func main() {
 
 	go cleanupIPLimiters() // Start the cleanup goroutine
 
-	logger.Println("Starting DNS API server on :8080")
-	if err := r.Run(":5001"); err != nil {
-		logger.Fatalf("Failed to start server: %v", err)
+	if err := r.Run(":8080"); err != nil {
+		fmt.Printf("Failed to start server: %v\n", err)
 	}
 }
 
@@ -122,7 +116,6 @@ func cleanupIPLimiters() {
 	}
 }
 
-
 func handleBasicLookup(c *gin.Context) {
 	domain := c.Query("domain")
 	if domain == "" {
@@ -140,7 +133,6 @@ func handleBasicLookup(c *gin.Context) {
 	if err != nil {
 		records, err = performLookup(domain, dnsProviders["cloudflare"], basicRecordTypes)
 		if err != nil {
-			logger.Printf("DNS lookup failed for domain %s: %v", domain, err)
 			c.JSON(500, gin.H{"error": "DNS lookup failed"})
 			return
 		}
@@ -165,7 +157,6 @@ func handleDetailedLookup(c *gin.Context) {
 
 	records, err := performLookup(domain, dnsProviders["google"], allRecordTypes)
 	if err != nil {
-		logger.Printf("Detailed DNS lookup failed for domain %s: %v", domain, err)
 		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
 	}
@@ -189,7 +180,6 @@ func handleRawLookup(c *gin.Context) {
 
 	records, err := performRawLookup(domain, dnsProviders["google"], basicRecordTypes)
 	if err != nil {
-		logger.Printf("Raw DNS lookup failed for domain %s: %v", domain, err)
 		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
 	}
@@ -213,7 +203,6 @@ func handleReverseLookup(c *gin.Context) {
 
 	names, err := net.LookupAddr(ip)
 	if err != nil {
-		logger.Printf("Reverse DNS lookup failed for IP %s: %v", ip, err)
 		c.JSON(500, gin.H{"error": "Reverse DNS lookup failed"})
 		return
 	}
@@ -240,7 +229,6 @@ func handleIndividualRecordLookup(recordType string) gin.HandlerFunc {
 		dnsType := dns.StringToType[strings.ToUpper(recordType)]
 		records, err := performLookup(domain, dnsProviders["google"], []uint16{dnsType})
 		if err != nil {
-			logger.Printf("DNS lookup failed for domain %s and record type %s: %v", domain, recordType, err)
 			c.JSON(500, gin.H{"error": "DNS lookup failed"})
 			return
 		}
@@ -266,7 +254,6 @@ func handleProviderLookup(provider string) gin.HandlerFunc {
 
 		records, err := performLookup(domain, dnsProviders[provider], basicRecordTypes)
 		if err != nil {
-			logger.Printf("DNS lookup failed for domain %s using provider %s: %v", domain, provider, err)
 			c.JSON(500, gin.H{"error": "DNS lookup failed"})
 			return
 		}
@@ -277,107 +264,143 @@ func handleProviderLookup(provider string) gin.HandlerFunc {
 }
 
 func performLookup(domain string, servers []string, types []uint16) (map[string][]string, error) {
-	records := make(map[string][]string)
+	records := make(map[string]map[string]struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	var firstError error
 
 	for _, server := range servers {
-		for _, recordType := range types {
-			msg := new(dns.Msg)
-			msg.SetQuestion(dns.Fqdn(domain), recordType)
-			msg.SetEdns0(4096, true) // Enable DNSSEC
+		wg.Add(1)
+		go func(server string) {
+			defer wg.Done()
+			for _, recordType := range types {
+				msg := new(dns.Msg)
+				msg.SetQuestion(dns.Fqdn(domain), recordType)
+				msg.SetEdns0(4096, true) // Enable DNSSEC
 
-			client := &dns.Client{}
-			resp, _, err := client.Exchange(msg, server)
-			if err != nil {
-				if firstError == nil {
-					firstError = err
+				client := &dns.Client{}
+				resp, _, err := client.Exchange(msg, server)
+				if err != nil {
+					mu.Lock()
+					if firstError == nil {
+						firstError = err
+					}
+					mu.Unlock()
+					continue
 				}
-				continue
-			}
 
-			if resp.Rcode != dns.RcodeSuccess {
-				continue
-			}
-
-			for _, answer := range resp.Answer {
-				recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
-				switch answer.Header().Rrtype {
-				case dns.TypeA:
-					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.A).A.String())
-				case dns.TypeAAAA:
-					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.AAAA).AAAA.String())
-				case dns.TypeCNAME:
-					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.CNAME).Target)
-				case dns.TypeMX:
-					mx := answer.(*dns.MX)
-					records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%d %s", mx.Preference, mx.Mx))
-				case dns.TypeNS:
-					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.NS).Ns)
-				case dns.TypeTXT:
-					records[recordTypeStr] = append(records[recordTypeStr], strings.Join(answer.(*dns.TXT).Txt, " "))
-				case dns.TypeSOA:
-					soa := answer.(*dns.SOA)
-					records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%s %s %d %d %d %d %d",
-						soa.Ns, soa.Mbox, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minttl))
-				default:
-					records[recordTypeStr] = append(records[recordTypeStr], answer.String())
+				if resp.Rcode != dns.RcodeSuccess {
+					continue
 				}
-			}
 
-			// Stop after first successful response
-			if len(records) > 0 {
-				return records, nil
+				mu.Lock()
+				for _, answer := range resp.Answer {
+					recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
+					if records[recordTypeStr] == nil {
+						records[recordTypeStr] = make(map[string]struct{})
+					}
+					var value string
+					switch answer.Header().Rrtype {
+					case dns.TypeA:
+						value = answer.(*dns.A).A.String()
+					case dns.TypeAAAA:
+						value = answer.(*dns.AAAA).AAAA.String()
+					case dns.TypeCNAME:
+						value = answer.(*dns.CNAME).Target
+					case dns.TypeMX:
+						mx := answer.(*dns.MX)
+						value = fmt.Sprintf("%d %s", mx.Preference, mx.Mx)
+					case dns.TypeNS:
+						value = answer.(*dns.NS).Ns
+					case dns.TypeTXT:
+						value = strings.Join(answer.(*dns.TXT).Txt, " ")
+					case dns.TypeSOA:
+						soa := answer.(*dns.SOA)
+						value = fmt.Sprintf("%s %s %d %d %d %d %d",
+							soa.Ns, soa.Mbox, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minttl)
+					default:
+						value = answer.String()
+					}
+					records[recordTypeStr][value] = struct{}{}
+				}
+				mu.Unlock()
 			}
-		}
+		}(server)
 	}
+
+	wg.Wait()
 
 	if len(records) == 0 && firstError != nil {
 		return nil, firstError
 	}
 
-	return records, nil
-}
+	// Convert map of unique values to slice
+	result := make(map[string][]string)
+	for recordType, uniqueValues := range records {
+		for value := range uniqueValues {
+			result[recordType] = append(result[recordType], value)
+		}
+	}
 
+	return result, nil
+}
 
 func performRawLookup(domain string, servers []string, types []uint16) (map[string][]string, error) {
-	records := make(map[string][]string)
+	records := make(map[string]map[string]struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
 	var firstError error
 
 	for _, server := range servers {
-		for _, recordType := range types {
-			msg := new(dns.Msg)
-			msg.SetQuestion(dns.Fqdn(domain), recordType)
-			msg.SetEdns0(4096, true) // Enable DNSSEC
+		wg.Add(1)
+		go func(server string) {
+			defer wg.Done()
+			for _, recordType := range types {
+				msg := new(dns.Msg)
+				msg.SetQuestion(dns.Fqdn(domain), recordType)
+				msg.SetEdns0(4096, true) // Enable DNSSEC
 
-			client := &dns.Client{}
-			resp, _, err := client.Exchange(msg, server)
-			if err != nil {
-				if firstError == nil {
-					firstError = err
+				client := &dns.Client{}
+				resp, _, err := client.Exchange(msg, server)
+				if err != nil {
+					mu.Lock()
+					if firstError == nil {
+						firstError = err
+					}
+					mu.Unlock()
+					continue
 				}
-				continue
-			}
 
-			if resp.Rcode != dns.RcodeSuccess {
-				continue
-			}
+				if resp.Rcode != dns.RcodeSuccess {
+					continue
+				}
 
-			for _, answer := range resp.Answer {
-				recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
-				records[recordTypeStr] = append(records[recordTypeStr], answer.String())
+				mu.Lock()
+				for _, answer := range resp.Answer {
+					recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
+					if records[recordTypeStr] == nil {
+						records[recordTypeStr] = make(map[string]struct{})
+					}
+					records[recordTypeStr][answer.String()] = struct{}{}
+				}
+				mu.Unlock()
 			}
-
-			// Stop after first successful response
-			if len(records) > 0 {
-				return records, nil
-			}
-		}
+		}(server)
 	}
+
+	wg.Wait()
 
 	if len(records) == 0 && firstError != nil {
 		return nil, firstError
 	}
 
-	return records, nil
-}
+	// Convert map of unique values to slice
+	result := make(map[string][]string)
+	for recordType, uniqueValues := range records {
+		for value := range uniqueValues {
+			result[recordType] = append(result[recordType], value)
+		}
+	}
 
+	return result, nil
+}
