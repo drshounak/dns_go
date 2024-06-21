@@ -76,7 +76,7 @@ func main() {
 	go cleanupIPLimiters() // Start the cleanup goroutine
 
 	logger.Println("Starting DNS API server on :8080")
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run(":5001"); err != nil {
 		logger.Fatalf("Failed to start server: %v", err)
 	}
 }
