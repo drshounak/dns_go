@@ -275,37 +275,33 @@
 
     <script>
         document.getElementById('dns-form').addEventListener('submit', function(e) {
-            e.preventDefault();
-            var domain = document.getElementById('domain').value;
-            var lookupType = document.getElementById('lookup-type').value;
-            var dnsProvider = document.getElementById('dns-provider').value;
-            var url = 'https://nslookup.techweirdo.net/lookup';
+    e.preventDefault();
+    var domain = document.getElementById('domain').value;
+    var lookupType = document.getElementById('lookup-type').value;
+    var dnsProvider = document.getElementById('dns-provider').value;
+    var url = 'https://nslookup.techweirdo.net/api/lookup';
 
-            if (lookupType === 'reverse') {
-                url += '/reverse?ip=' + domain;
-            } else {
-                if (dnsProvider !== 'default') {
-                    url += '/' + dnsProvider;
-                }
-                if (['a', 'aaaa', 'cname', 'mx', 'ns', 'txt'].includes(lookupType)) {
-                    url += '/' + lookupType;
-                } else if (lookupType !== 'basic') {
-                    url += '/' + lookupType;
-                }
-                url += '?domain=' + domain;
-            }
-            
-            fetch(url)
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('result').classList.remove('hidden');
-                    document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
-                })
-                .catch(error => {
-                    document.getElementById('result').classList.remove('hidden');
-                    document.getElementById('result-content').textContent = 'Error: ' + error.message;
-                });
+    if (dnsProvider !== 'default') {
+        url += '/provider/' + dnsProvider;
+    } else if (['a', 'aaaa', 'cname', 'mx', 'ns', 'txt'].includes(lookupType)) {
+        url += '/' + lookupType;
+    } else if (lookupType !== 'basic') {
+        url += '?type=' + lookupType;
+    }
+    url += (url.includes('?') ? '&' : '?') + 'domain=' + domain;
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('result').classList.remove('hidden');
+            document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('result').classList.remove('hidden');
+            document.getElementById('result-content').textContent = 'Error: ' + error.message;
         });
+});
+
 
         // Smooth scrolling for anchor links
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
