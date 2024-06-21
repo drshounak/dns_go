@@ -18,13 +18,6 @@ var (
 		"google":     {"8.8.8.8:53", "8.8.4.4:53"},
 		"cloudflare": {"1.1.1.1:53", "1.0.0.1:53"},
 		"opendns":    {"208.67.222.222:53", "208.67.220.220:53"},
-		"root": {
-			"a.root-servers.net:53", "b.root-servers.net:53", "c.root-servers.net:53",
-			"d.root-servers.net:53", "e.root-servers.net:53", "f.root-servers.net:53",
-			"g.root-servers.net:53", "h.root-servers.net:53", "i.root-servers.net:53",
-			"j.root-servers.net:53", "k.root-servers.net:53", "l.root-servers.net:53",
-			"m.root-servers.net:53",
-		},
 	}
 
 	basicRecordTypes = []uint16{
@@ -46,8 +39,8 @@ type RateLimiterWithLastUse struct {
 }
 
 func init() {
-	// Initialize cache with 5 minutes default expiration and 10 minutes cleanup interval
-	dnsCache = cache.New(5*time.Minute, 10*time.Minute)
+	// Initialize cache with 10 seconds default expiration and 30 seconds cleanup interval
+	dnsCache = cache.New(10*time.Second, 30*time.Second)
 }
 
 func main() {
@@ -59,6 +52,7 @@ func main() {
 	r.GET("/lookup/detailed", handleDetailedLookup)
 	r.GET("/lookup/raw", handleRawLookup)
 	r.GET("/lookup/reverse", handleReverseLookup)
+	r.GET("/lookup/authoritative", handleAuthoritativeLookup)
 
 	for _, recordType := range []string{"a", "aaaa", "cname", "ns", "txt"} {
 		r.GET(fmt.Sprintf("/lookup/%s", recordType), handleIndividualRecordLookup(recordType))
@@ -70,7 +64,7 @@ func main() {
 
 	go cleanupIPLimiters() // Start the cleanup goroutine
 
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run(":5001"); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 	}
 }
@@ -210,6 +204,35 @@ func handleReverseLookup(c *gin.Context) {
 	result := map[string][]string{"PTR": names}
 	dnsCache.Set(cacheKey, result, cache.DefaultExpiration)
 	c.JSON(200, result)
+}
+
+func handleAuthoritativeLookup(c *gin.Context) {
+	domain := c.Query("domain")
+	if domain == "" {
+		c.JSON(400, gin.H{"error": "Domain parameter is required"})
+		return
+	}
+
+	cacheKey := fmt.Sprintf("authoritative:%s", domain)
+	if cachedRecords, found := dnsCache.Get(cacheKey); found {
+		c.JSON(200, cachedRecords)
+		return
+	}
+
+	authServers, err := getAuthoritativeServers(domain)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to get authoritative servers"})
+		return
+	}
+
+	records, err := performLookup(domain, authServers, allRecordTypes)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Authoritative DNS lookup failed"})
+		return
+	}
+
+	dnsCache.Set(cacheKey, records, cache.DefaultExpiration)
+	c.JSON(200, records)
 }
 
 func handleIndividualRecordLookup(recordType string) gin.HandlerFunc {
@@ -403,4 +426,34 @@ func performRawLookup(domain string, servers []string, types []uint16) (map[stri
 	}
 
 	return result, nil
+}
+
+func getAuthoritativeServers(domain string) ([]string, error) {
+	var authServers []string
+	var client dns.Client
+	var m dns.Msg
+
+	m.SetQuestion(dns.Fqdn(domain), dns.TypeNS)
+	m.RecursionDesired = true
+
+	r, _, err := client.Exchange(&m, "8.8.8.8:53")
+	if err != nil {
+		return nil, err
+	}
+
+	if len(r.Answer) == 0 {
+		return nil, fmt.Errorf("no NS records found for %s", domain)
+	}
+
+	for _, ans := range r.Answer {
+		if ns, ok := ans.(*dns.NS); ok {
+			authServers = append(authServers, ns.Ns+":53")
+		}
+	}
+
+	if len(authServers) == 0 {
+		return nil, fmt.Errorf("no authoritative servers found for %s", domain)
+	}
+
+	return authServers, nil
 }
