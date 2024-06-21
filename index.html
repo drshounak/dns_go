@@ -168,43 +168,42 @@
                             </h3>
                             <div class="mt-5">
                                 <form id="dns-form" class="space-y-6">
-                                    <div>
-                                        <label for="domain" class="block text-sm font-medium text-gray-700">Domain or IP</label>
-                                        <div class="mt-1">
-                                            <input type="text" name="domain" id="domain" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md" placeholder="example.com or 192.168.1.1">
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label for="lookup-type" class="block text-sm font-medium text-gray-700">Lookup Type</label>
-                                        <select id="lookup-type" name="lookup-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
-                                            <option value="basic">Basic</option>
-                                            <option value="detailed">Detailed</option>
-                                            <option value="raw">Raw</option>
-                                            <option value="authoritative">Authoritative</option>
-                                            <option value="reverse">Reverse</option>
-                                            <option value="a">A Record</option>
-                                            <option value="aaaa">AAAA Record</option>
-                                            <option value="cname">CNAME Record</option>
-                                            <option value="mx">MX Record</option>
-                                            <option value="ns">NS Record</option>
-                                            <option value="txt">TXT Record</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label for="dns-provider" class="block text-sm font-medium text-gray-700">DNS Provider</label>
-                                        <select id="dns-provider" name="dns-provider" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
-                                            <option value="default">Default</option>
-                                            <option value="google">Google</option>
-                                            <option value="cloudflare">Cloudflare</option>
-                                            <option value="opendns">OpenDNS</option>
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
-                                            Lookup
-                                        </button>
-                                    </div>
-                                </form>
+    <div>
+        <label for="domain" class="block text-sm font-medium text-gray-700">Domain or IP</label>
+        <div class="mt-1">
+            <input type="text" name="domain" id="domain" class="shadow-sm focus:ring-indigo-500 focus:border-indigo-500 block w-full sm:text-sm border-gray-300 rounded-md" placeholder="example.com or 192.168.1.1">
+        </div>
+    </div>
+    <div>
+        <label for="lookup-type" class="block text-sm font-medium text-gray-700">Lookup Type</label>
+        <select id="lookup-type" name="lookup-type" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+            <option value="basic">Basic</option>
+            <option value="detailed">Detailed</option>
+            <option value="raw">Raw</option>
+            <option value="authoritative">Authoritative</option>
+            <option value="a">A Record</option>
+            <option value="aaaa">AAAA Record</option>
+            <option value="cname">CNAME Record</option>
+            <option value="mx">MX Record</option>
+            <option value="ns">NS Record</option>
+            <option value="txt">TXT Record</option>
+        </select>
+    </div>
+    <div>
+        <label for="dns-provider" class="block text-sm font-medium text-gray-700">DNS Provider</label>
+        <select id="dns-provider" name="dns-provider" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+            <option value="default">Default</option>
+            <option value="google">Google</option>
+            <option value="cloudflare">Cloudflare</option>
+            <option value="opendns">OpenDNS</option>
+        </select>
+    </div>
+    <div>
+        <button type="submit" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+            Lookup
+        </button>
+    </div>
+</form>
                             </div>
                         </div>
                     </div>
@@ -216,58 +215,54 @@
         </section>
 
         <section id="docs" class="py-12 bg-white">
-            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-                <h2 class="text-3xl font-extrabold text-gray-900 sm:text-4xl">
-                    API Documentation
-                </h2>
-                <div class="mt-8 space-y-8">
-                    <div>
-                        <h3 class="text-2xl font-bold text-gray-900">Base URL</h3>
-                        <p class="mt-2 text-gray-600">All API requests should be made to:</p>
-                        <pre class="mt-2 bg-gray-100 p-2 rounded-md">https://nslookup.techweirdo.net</pre>
-                    </div>
-                    <div>
-                        <h3 class="text-2xl font-bold text-gray-900">Endpoints</h3>
-                        <ul class="mt-2 space-y-4">
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Basic Lookup</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup?domain={domain}</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Detailed Lookup</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/detailed?domain={domain}</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Raw Lookup</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/raw?domain={domain}</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Authoritative Lookup</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/authoritative?domain={domain}</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Reverse Lookup</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/reverse?ip={ip}</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Specific Record Types</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/{record_type}?domain={domain}</p>
-                                <p class="mt-1 text-gray-600">Where {record_type} can be: a, aaaa, cname, mx, ns, txt</p>
-                            </li>
-                            <li>
-                                <h4 class="text-lg font-semibold text-gray-900">Specific DNS Providers</h4>
-                                <p class="mt-1 text-gray-600">GET /lookup/{provider}?domain={domain}</p>
-                                <p class="mt-1 text-gray-600">Where {provider} can be: google, cloudflare, opendns</p>
-                            </li>
-                        </ul>
-                    </div>
-                    <div>
-                        <h3 class="text-2xl font-bold text-gray-900">Response Format</h3>
-                        <p class="mt-2 text-gray-600">All responses are in JSON format.</p>
-                    </div>
-                </div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <h2 class="text-3xl font-extrabold text-gray-900 sm:text-4xl">
+            API Documentation
+        </h2>
+        <div class="mt-8 space-y-8">
+            <div>
+                <h3 class="text-2xl font-bold text-gray-900">Base URL</h3>
+                <p class="mt-2 text-gray-600">All API requests should be made to:</p>
+                <pre class="mt-2 bg-gray-100 p-2 rounded-md">https://nslookup.techweirdo.net/api</pre>
             </div>
-        </section>
+            <div>
+                <h3 class="text-2xl font-bold text-gray-900">Endpoints</h3>
+                <ul class="mt-2 space-y-4">
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Basic Lookup</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup?domain={domain}</p>
+                    </li>
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Detailed Lookup</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup?domain={domain}&type=detailed</p>
+                    </li>
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Raw Lookup</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup?domain={domain}&type=raw</p>
+                    </li>
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Authoritative Lookup</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup?domain={domain}&type=authoritative</p>
+                    </li>
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Specific Record Types</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup/{record_type}?domain={domain}</p>
+                        <p class="mt-1 text-gray-600">Where {record_type} can be: a, aaaa, cname, mx, ns, txt</p>
+                    </li>
+                    <li>
+                        <h4 class="text-lg font-semibold text-gray-900">Specific DNS Providers</h4>
+                        <p class="mt-1 text-gray-600">GET /lookup/provider/{provider}?domain={domain}</p>
+                        <p class="mt-1 text-gray-600">Where {provider} can be: google, cloudflare, opendns</p>
+                    </li>
+                </ul>
+            </div>
+            <div>
+                <h3 class="text-2xl font-bold text-gray-900">Response Format</h3>
+                <p class="mt-2 text-gray-600">All responses are in JSON format.</p>
+            </div>
+        </div>
+    </div>
+</section>
     </main>
 
     <footer class="bg-gray-800">
