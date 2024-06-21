@@ -278,65 +278,58 @@ func handleProviderLookup(provider string) gin.HandlerFunc {
 
 func performLookup(domain string, servers []string, types []uint16) (map[string][]string, error) {
 	records := make(map[string][]string)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
 	var firstError error
 
 	for _, server := range servers {
-		wg.Add(1)
-		go func(server string) {
-			defer wg.Done()
-			for _, recordType := range types {
-				msg := new(dns.Msg)
-				msg.SetQuestion(dns.Fqdn(domain), recordType)
-				msg.SetEdns0(4096, true) // Enable DNSSEC
+		for _, recordType := range types {
+			msg := new(dns.Msg)
+			msg.SetQuestion(dns.Fqdn(domain), recordType)
+			msg.SetEdns0(4096, true) // Enable DNSSEC
 
-				client := &dns.Client{}
-				resp, _, err := client.Exchange(msg, server)
-				if err != nil {
-					mu.Lock()
-					if firstError == nil {
-						firstError = err
-					}
-					mu.Unlock()
-					continue
+			client := &dns.Client{}
+			resp, _, err := client.Exchange(msg, server)
+			if err != nil {
+				if firstError == nil {
+					firstError = err
 				}
-
-				if resp.Rcode != dns.RcodeSuccess {
-					continue
-				}
-
-				mu.Lock()
-				for _, answer := range resp.Answer {
-					recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
-					switch answer.Header().Rrtype {
-					case dns.TypeA:
-						records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.A).A.String())
-					case dns.TypeAAAA:
-						records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.AAAA).AAAA.String())
-					case dns.TypeCNAME:
-						records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.CNAME).Target)
-					case dns.TypeMX:
-						mx := answer.(*dns.MX)
-						records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%d %s", mx.Preference, mx.Mx))
-					case dns.TypeNS:
-						records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.NS).Ns)
-					case dns.TypeTXT:
-						records[recordTypeStr] = append(records[recordTypeStr], strings.Join(answer.(*dns.TXT).Txt, " "))
-					case dns.TypeSOA:
-						soa := answer.(*dns.SOA)
-						records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%s %s %d %d %d %d %d",
-							soa.Ns, soa.Mbox, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minttl))
-					default:
-						records[recordTypeStr] = append(records[recordTypeStr], answer.String())
-					}
-				}
-				mu.Unlock()
+				continue
 			}
-		}(server)
-	}
 
-	wg.Wait()
+			if resp.Rcode != dns.RcodeSuccess {
+				continue
+			}
+
+			for _, answer := range resp.Answer {
+				recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
+				switch answer.Header().Rrtype {
+				case dns.TypeA:
+					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.A).A.String())
+				case dns.TypeAAAA:
+					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.AAAA).AAAA.String())
+				case dns.TypeCNAME:
+					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.CNAME).Target)
+				case dns.TypeMX:
+					mx := answer.(*dns.MX)
+					records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%d %s", mx.Preference, mx.Mx))
+				case dns.TypeNS:
+					records[recordTypeStr] = append(records[recordTypeStr], answer.(*dns.NS).Ns)
+				case dns.TypeTXT:
+					records[recordTypeStr] = append(records[recordTypeStr], strings.Join(answer.(*dns.TXT).Txt, " "))
+				case dns.TypeSOA:
+					soa := answer.(*dns.SOA)
+					records[recordTypeStr] = append(records[recordTypeStr], fmt.Sprintf("%s %s %d %d %d %d %d",
+						soa.Ns, soa.Mbox, soa.Serial, soa.Refresh, soa.Retry, soa.Expire, soa.Minttl))
+				default:
+					records[recordTypeStr] = append(records[recordTypeStr], answer.String())
+				}
+			}
+
+			// Stop after first successful response
+			if len(records) > 0 {
+				return records, nil
+			}
+		}
+	}
 
 	if len(records) == 0 && firstError != nil {
 		return nil, firstError
@@ -344,48 +337,42 @@ func performLookup(domain string, servers []string, types []uint16) (map[string]
 
 	return records, nil
 }
+
 
 func performRawLookup(domain string, servers []string, types []uint16) (map[string][]string, error) {
 	records := make(map[string][]string)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
 	var firstError error
 
 	for _, server := range servers {
-		wg.Add(1)
-		go func(server string) {
-			defer wg.Done()
-			for _, recordType := range types {
-				msg := new(dns.Msg)
-				msg.SetQuestion(dns.Fqdn(domain), recordType)
-				msg.SetEdns0(4096, true) // Enable DNSSEC
+		for _, recordType := range types {
+			msg := new(dns.Msg)
+			msg.SetQuestion(dns.Fqdn(domain), recordType)
+			msg.SetEdns0(4096, true) // Enable DNSSEC
 
-				client := &dns.Client{}
-				resp, _, err := client.Exchange(msg, server)
-				if err != nil {
-					mu.Lock()
-					if firstError == nil {
-						firstError = err
-					}
-					mu.Unlock()
-					continue
+			client := &dns.Client{}
+			resp, _, err := client.Exchange(msg, server)
+			if err != nil {
+				if firstError == nil {
+					firstError = err
 				}
-
-				if resp.Rcode != dns.RcodeSuccess {
-					continue
-				}
-
-				mu.Lock()
-				for _, answer := range resp.Answer {
-					recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
-					records[recordTypeStr] = append(records[recordTypeStr], answer.String())
-				}
-				mu.Unlock()
+				continue
 			}
-		}(server)
-	}
 
-	wg.Wait()
+			if resp.Rcode != dns.RcodeSuccess {
+				continue
+			}
+
+			for _, answer := range resp.Answer {
+				recordTypeStr := dns.TypeToString[answer.Header().Rrtype]
+				records[recordTypeStr] = append(records[recordTypeStr], answer.String())
+			}
+
+			// Stop after first successful response
+			if len(records) > 0 {
+				return records, nil
+			}
+		}
+	}
 
 	if len(records) == 0 && firstError != nil {
 		return nil, firstError
@@ -393,3 +380,4 @@ func performRawLookup(domain string, servers []string, types []uint16) (map[stri
 
 	return records, nil
 }
+
