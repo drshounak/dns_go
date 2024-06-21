@@ -39,7 +39,6 @@ type RateLimiterWithLastUse struct {
 }
 
 func init() {
-	// Initialize cache with 10 seconds default expiration and 30 seconds cleanup interval
 	dnsCache = cache.New(10*time.Second, 30*time.Second)
 }
 
@@ -47,32 +46,35 @@ func main() {
 	r := gin.Default()
 
 	r.Use(rateLimitMiddleware())
+	r.Use(corsMiddleware())
 
-	r.GET("/lookup", handleBasicLookup)
-	r.GET("/lookup/detailed", handleDetailedLookup)
-	r.GET("/lookup/raw", handleRawLookup)
-	r.GET("/lookup/reverse", handleReverseLookup)
-	r.GET("/lookup/authoritative", handleAuthoritativeLookup)
-
-	for _, recordType := range []string{"a", "aaaa", "cname", "ns", "txt"} {
-		r.GET(fmt.Sprintf("/lookup/%s", recordType), handleIndividualRecordLookup(recordType))
-	}
-
-	for provider := range dnsProviders {
-		r.GET(fmt.Sprintf("/lookup/%s", provider), handleProviderLookup(provider))
-	}
-
-	go cleanupIPLimiters() // Start the cleanup goroutine
+	r.GET("/api/lookup", handleLookup)
+	r.GET("/api/lookup/:type", handleTypedLookup)
+	r.GET("/api/lookup/provider/:provider", handleProviderLookup)
 
 	if err := r.Run(":5001"); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 	}
 }
 
+func corsMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+
 func getIPLimiter(ip string) *RateLimiterWithLastUse {
 	limiter, exists := ipLimiters.Load(ip)
 	if !exists {
-		// Allow 10 requests per second with a burst of 20
 		newLimiter := &RateLimiterWithLastUse{
 			limiter: rate.NewLimiter(rate.Limit(10), 20),
 			lastUse: time.Now(),
@@ -98,7 +100,7 @@ func rateLimitMiddleware() gin.HandlerFunc {
 
 func cleanupIPLimiters() {
 	for {
-		time.Sleep(time.Hour) // Run cleanup every hour
+		time.Sleep(time.Hour)
 		ipLimiters.Range(func(key, value interface{}) bool {
 			ip := key.(string)
 			limiter := value.(*RateLimiterWithLastUse)
@@ -110,46 +112,55 @@ func cleanupIPLimiters() {
 	}
 }
 
-func handleBasicLookup(c *gin.Context) {
+func handleLookup(c *gin.Context) {
 	domain := c.Query("domain")
 	if domain == "" {
 		c.JSON(400, gin.H{"error": "Domain parameter is required"})
 		return
 	}
 
-	cacheKey := fmt.Sprintf("basic:%s", domain)
+	lookupType := c.DefaultQuery("type", "basic")
+	var recordTypes []uint16
+	var cacheKey string
+
+	switch lookupType {
+	case "detailed":
+		recordTypes = allRecordTypes
+		cacheKey = fmt.Sprintf("detailed:%s", domain)
+	case "raw":
+		cacheKey = fmt.Sprintf("raw:%s", domain)
+	case "authoritative":
+		cacheKey = fmt.Sprintf("authoritative:%s", domain)
+	default:
+		recordTypes = basicRecordTypes
+		cacheKey = fmt.Sprintf("basic:%s", domain)
+	}
+
 	if cachedRecords, found := dnsCache.Get(cacheKey); found {
 		c.JSON(200, cachedRecords)
 		return
 	}
 
-	records, err := performLookup(domain, dnsProviders["google"], basicRecordTypes)
-	if err != nil {
-		records, err = performLookup(domain, dnsProviders["cloudflare"], basicRecordTypes)
+	var records map[string][]string
+	var err error
+
+	switch lookupType {
+	case "raw":
+		records, err = performRawLookup(domain, dnsProviders["google"], basicRecordTypes)
+	case "authoritative":
+		authServers, err := getAuthoritativeServers(domain)
 		if err != nil {
-			c.JSON(500, gin.H{"error": "DNS lookup failed"})
+			c.JSON(500, gin.H{"error": "Failed to get authoritative servers"})
 			return
+		}
+		records, err = performLookup(domain, authServers, allRecordTypes)
+	default:
+		records, err = performLookup(domain, dnsProviders["google"], recordTypes)
+		if err != nil {
+			records, err = performLookup(domain, dnsProviders["cloudflare"], recordTypes)
 		}
 	}
 
-	dnsCache.Set(cacheKey, records, cache.DefaultExpiration)
-	c.JSON(200, records)
-}
-
-func handleDetailedLookup(c *gin.Context) {
-	domain := c.Query("domain")
-	if domain == "" {
-		c.JSON(400, gin.H{"error": "Domain parameter is required"})
-		return
-	}
-
-	cacheKey := fmt.Sprintf("detailed:%s", domain)
-	if cachedRecords, found := dnsCache.Get(cacheKey); found {
-		c.JSON(200, cachedRecords)
-		return
-	}
-
-	records, err := performLookup(domain, dnsProviders["google"], allRecordTypes)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
@@ -159,20 +170,27 @@ func handleDetailedLookup(c *gin.Context) {
 	c.JSON(200, records)
 }
 
-func handleRawLookup(c *gin.Context) {
+func handleTypedLookup(c *gin.Context) {
 	domain := c.Query("domain")
 	if domain == "" {
 		c.JSON(400, gin.H{"error": "Domain parameter is required"})
 		return
 	}
 
-	cacheKey := fmt.Sprintf("raw:%s", domain)
+	recordType := c.Param("type")
+	dnsType, ok := dns.StringToType[strings.ToUpper(recordType)]
+	if !ok {
+		c.JSON(400, gin.H{"error": "Invalid record type"})
+		return
+	}
+
+	cacheKey := fmt.Sprintf("%s:%s", recordType, domain)
 	if cachedRecords, found := dnsCache.Get(cacheKey); found {
 		c.JSON(200, cachedRecords)
 		return
 	}
 
-	records, err := performRawLookup(domain, dnsProviders["google"], basicRecordTypes)
+	records, err := performLookup(domain, dnsProviders["google"], []uint16{dnsType})
 	if err != nil {
 		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
@@ -182,108 +200,34 @@ func handleRawLookup(c *gin.Context) {
 	c.JSON(200, records)
 }
 
-func handleReverseLookup(c *gin.Context) {
-	ip := c.Query("ip")
-	if ip == "" {
-		c.JSON(400, gin.H{"error": "IP parameter is required"})
-		return
-	}
-
-	cacheKey := fmt.Sprintf("reverse:%s", ip)
-	if cachedRecords, found := dnsCache.Get(cacheKey); found {
-		c.JSON(200, cachedRecords)
-		return
-	}
-
-	names, err := net.LookupAddr(ip)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Reverse DNS lookup failed"})
-		return
-	}
-
-	result := map[string][]string{"PTR": names}
-	dnsCache.Set(cacheKey, result, cache.DefaultExpiration)
-	c.JSON(200, result)
-}
-
-func handleAuthoritativeLookup(c *gin.Context) {
+func handleProviderLookup(c *gin.Context) {
 	domain := c.Query("domain")
 	if domain == "" {
 		c.JSON(400, gin.H{"error": "Domain parameter is required"})
 		return
 	}
 
-	cacheKey := fmt.Sprintf("authoritative:%s", domain)
+	provider := c.Param("provider")
+	servers, ok := dnsProviders[provider]
+	if !ok {
+		c.JSON(400, gin.H{"error": "Invalid DNS provider"})
+		return
+	}
+
+	cacheKey := fmt.Sprintf("%s:%s", provider, domain)
 	if cachedRecords, found := dnsCache.Get(cacheKey); found {
 		c.JSON(200, cachedRecords)
 		return
 	}
 
-	authServers, err := getAuthoritativeServers(domain)
+	records, err := performLookup(domain, servers, basicRecordTypes)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Failed to get authoritative servers"})
-		return
-	}
-
-	records, err := performLookup(domain, authServers, allRecordTypes)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Authoritative DNS lookup failed"})
+		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
 	}
 
 	dnsCache.Set(cacheKey, records, cache.DefaultExpiration)
 	c.JSON(200, records)
-}
-
-func handleIndividualRecordLookup(recordType string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		domain := c.Query("domain")
-		if domain == "" {
-			c.JSON(400, gin.H{"error": "Domain parameter is required"})
-			return
-		}
-
-		cacheKey := fmt.Sprintf("%s:%s", recordType, domain)
-		if cachedRecords, found := dnsCache.Get(cacheKey); found {
-			c.JSON(200, cachedRecords)
-			return
-		}
-
-		dnsType := dns.StringToType[strings.ToUpper(recordType)]
-		records, err := performLookup(domain, dnsProviders["google"], []uint16{dnsType})
-		if err != nil {
-			c.JSON(500, gin.H{"error": "DNS lookup failed"})
-			return
-		}
-
-		dnsCache.Set(cacheKey, records, cache.DefaultExpiration)
-		c.JSON(200, records)
-	}
-}
-
-func handleProviderLookup(provider string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		domain := c.Query("domain")
-		if domain == "" {
-			c.JSON(400, gin.H{"error": "Domain parameter is required"})
-			return
-		}
-
-		cacheKey := fmt.Sprintf("%s:%s", provider, domain)
-		if cachedRecords, found := dnsCache.Get(cacheKey); found {
-			c.JSON(200, cachedRecords)
-			return
-		}
-
-		records, err := performLookup(domain, dnsProviders[provider], basicRecordTypes)
-		if err != nil {
-			c.JSON(500, gin.H{"error": "DNS lookup failed"})
-			return
-		}
-
-		dnsCache.Set(cacheKey, records, cache.DefaultExpiration)
-		c.JSON(200, records)
-	}
 }
 
 func performLookup(domain string, servers []string, types []uint16) (map[string][]string, error) {
@@ -299,7 +243,7 @@ func performLookup(domain string, servers []string, types []uint16) (map[string]
 			for _, recordType := range types {
 				msg := new(dns.Msg)
 				msg.SetQuestion(dns.Fqdn(domain), recordType)
-				msg.SetEdns0(4096, true) // Enable DNSSEC
+				msg.SetEdns0(4096, true)
 
 				client := &dns.Client{}
 				resp, _, err := client.Exchange(msg, server)
@@ -357,7 +301,6 @@ func performLookup(domain string, servers []string, types []uint16) (map[string]
 		return nil, firstError
 	}
 
-	// Convert map of unique values to slice
 	result := make(map[string][]string)
 	for recordType, uniqueValues := range records {
 		for value := range uniqueValues {
@@ -381,7 +324,7 @@ func performRawLookup(domain string, servers []string, types []uint16) (map[stri
 			for _, recordType := range types {
 				msg := new(dns.Msg)
 				msg.SetQuestion(dns.Fqdn(domain), recordType)
-				msg.SetEdns0(4096, true) // Enable DNSSEC
+				msg.SetEdns0(4096, true)
 
 				client := &dns.Client{}
 				resp, _, err := client.Exchange(msg, server)
@@ -417,7 +360,6 @@ func performRawLookup(domain string, servers []string, types []uint16) (map[stri
 		return nil, firstError
 	}
 
-	// Convert map of unique values to slice
 	result := make(map[string][]string)
 	for recordType, uniqueValues := range records {
 		for value := range uniqueValues {
