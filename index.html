@@ -297,85 +297,65 @@
     
 <script>
     document.getElementById('dns-form').addEventListener('submit', function(e) {
-    document.getElementById('dns-form').addEventListener('submit', function(e) {
+    e.preventDefault();
+    var domain = document.getElementById('domain').value;
+    var lookupType = document.getElementById('lookup-type').value;
+    var dnsProvider = document.getElementById('dns-provider').value;
+    var url = 'https://nslookup.techweirdo.net/api/lookup';
+    
+    // Show loading state
+    document.getElementById('result').classList.remove('hidden');
+    document.getElementById('result-content').textContent = 'Loading...';
+    
+    // Track form submission with umami
+    umami.track('DNS Lookup', {
+        domain: domain,
+        lookupType: lookupType,
+        provider: dnsProvider
+    });
+    
+    if (dnsProvider !== 'default') {
+        url += '/provider/' + dnsProvider;
+    } else if (['a', 'aaaa', 'cname', 'mx', 'ns', 'txt'].includes(lookupType)) {
+        url += '/' + lookupType;
+    } else if (lookupType !== 'basic') {
+        url += '?type=' + lookupType;
+    }
+    url += (url.includes('?') ? '&' : '?') + 'domain=' + domain;
+    
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('result').classList.remove('hidden');
+            document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
+        })
+        .catch(error => {
+            document.getElementById('result').classList.remove('hidden');
+            document.getElementById('result-content').textContent = 'Error: ' + error.message;
+        });
+});
+// Smooth scrolling for anchor links
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function (e) {
         e.preventDefault();
-        const domain = document.getElementById('domain').value;
-        const lookupType = document.getElementById('lookup-type').value;
-        const dnsProvider = document.getElementById('dns-provider').value;
-        
-        // Show loading state
-        document.getElementById('result').classList.remove('hidden');
-        document.getElementById('result-content').innerHTML = `
-            <div class="flex items-center justify-center">
-                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-                <span class="ml-2">Loading...</span>
-            </div>
-        `;
-
-        // Track form submission
-        umami.track('DNS Lookup', {
-            domain: domain,
-            type: lookupType,
-            provider: dnsProvider
+        document.querySelector(this.getAttribute('href')).scrollIntoView({
+            behavior: 'smooth'
         });
-
-        let url = 'https://nslookup.techweirdo.net/api/lookup';
-        if (dnsProvider !== 'default') {
-            url += '/provider/' + dnsProvider;
-        } else if (['a', 'aaaa', 'cname', 'mx', 'ns', 'txt'].includes(lookupType)) {
-            url += '/' + lookupType;
-        } else if (lookupType !== 'basic') {
-            url += '?type=' + lookupType;
+    });
+});
+// Add animation to features on scroll
+const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            entry.target.classList.add('animate-fadeIn');
         }
-        url += (url.includes('?') ? '&' : '?') + 'domain=' + domain;
-        
-        fetch(url)
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('result-content').textContent = JSON.stringify(data, null, 2);
-                // Track success
-                umami.track('Lookup Success', {
-                    domain: domain,
-                    type: lookupType,
-                    provider: dnsProvider
-                });
-            })
-            .catch(error => {
-                document.getElementById('result-content').textContent = 'Error: ' + error.message;
-                // Track error
-                umami.track('Lookup Error', {
-                    domain: domain,
-                    type: lookupType,
-                    provider: dnsProvider,
-                    error: error.message
-                });
-            });
     });
-
-    // Smooth scrolling for anchor links
-    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-        anchor.addEventListener('click', function (e) {
-            e.preventDefault();
-            document.querySelector(this.getAttribute('href')).scrollIntoView({
-                behavior: 'smooth'
-            });
-        });
-    });
-
-    // Add animation to features on scroll
-    const observer = new IntersectionObserver((entries) => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('animate-fadeIn');
-            }
-        });
-    }, {
-        threshold: 0.1
-    });
-
-    document.querySelectorAll('#features dl > div').forEach(feature => {
-        observer.observe(feature);
-    });
+}, {
+    threshold: 0.1
+});
+document.querySelectorAll('#features dl > div').forEach(feature => {
+    observer.observe(feature);
+});
 </script>
 </body>
 </html>
