@@ -8,6 +8,19 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script defer src="https://analytics.techweirdo.net/script.js" data-website-id="8328f947-007b-417d-a3a0-fa077f16d3c6"></script>
     <script defer data-domain="nslookup.vercel.app" src="https://plsbl.shounak.in/js/script.js"></script>
+    <script>
+    tailwind.config = {
+        darkMode: 'class', // Enable class-based dark mode
+        theme: {
+            extend: {
+                backgroundColor: {
+                    'dark-primary': '#121212',
+                    'dark-secondary': '#1e1e1e'
+                }
+            }
+        }
+    }
+    </script>
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -27,98 +40,127 @@
             animation: fadeIn 0.5s ease-out forwards;
         }
     
+    <!-- First, modify the head section to add Tailwind dark mode config -->
+
     
+    <!-- Add dark mode styles -->
+    
+        /* Base dark mode styles */
+        .dark body {
+            background-color: #121212;
+            color: #e5e7eb;
+        }
+
+        .dark .bg-white {
+            background-color: #1e1e1e !important;
+        }
+
+        .dark .bg-gray-50 {
+            background-color: #121212 !important;
+        }
+
+        .dark .text-gray-900 {
+            color: #e5e7eb !important;
+        }
+
+        .dark .text-gray-600 {
+            color: #9ca3af !important;
+        }
+
+        .dark .text-gray-500 {
+            color: #6b7280 !important;
+        }
+
+        .dark .border-gray-100 {
+            border-color: #374151 !important;
+        }
+
+        .dark .hero-glow {
+            background: radial-gradient(circle at center, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0) 70%);
+        }
+
+        .dark pre {
+            background-color: #2d2d2d !important;
+        }
+
+        .dark .bg-gray-50 {
+            background-color: #1e1e1e !important;
+        }
+
+        /* Form elements in dark mode */
+        .dark select,
+        .dark input {
+            background-color: #2d2d2d !important;
+            color: #e5e7eb !important;
+            border-color: #4b5563 !important;
+        }
+
+        /* Preserve button colors in dark mode */
+        .dark .bg-indigo-600 {
+            background-color: #4f46e5 !important;
+        }
+
+        .dark .hover\:bg-indigo-700:hover {
+            background-color: #4338ca !important;
+        }
+
+        /* Add smooth transitions */
+        body, select, input, pre {
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+    </style>
+</head>
 
 
 
-/* Dark mode styles */
-.dark {
-    color-scheme: dark;
-}
-
-/* Dark mode overrides for Tailwind classes */
-.dark body {
-    @apply bg-gray-900;
-}
-
-.dark .bg-white {
-    @apply bg-gray-800;
-}
-
-.dark .bg-gray-50 {
-    @apply bg-gray-900;
-}
-
-.dark .text-gray-900 {
-    @apply text-gray-100;
-}
-
-.dark .text-gray-600 {
-    @apply text-gray-400;
-}
-
-.dark .text-gray-500 {
-    @apply text-gray-500;
-}
-
-.dark .border-gray-100 {
-    @apply border-gray-700;
-}
-
-.dark .bg-gray-50 {
-    @apply bg-gray-800;
-}
-
-.dark .hover\:bg-gray-50:hover {
-    @apply hover:bg-gray-700;
-}
-
-.dark .hero-glow {
-    background: radial-gradient(circle at center, rgba(99, 102, 241, 0.1) 0%, rgba(99, 102, 241, 0) 70%);
-}
-</style>
-
+<!-- Add the dark mode toggle script before the closing body tag -->
 <script>
-// Theme toggle functionality
-function initTheme() {
     // Check for saved theme preference, otherwise use system preference
-    const isDark = localStorage.theme === 'dark' || 
-        (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    
-    document.documentElement.classList.toggle('dark', isDark);
-    updateIcons(isDark);
-    
-    // Update icons visibility
-    function updateIcons(isDark) {
-        const moonIcon = document.getElementById('moon-icon');
-        const sunIcon = document.getElementById('sun-icon');
-        moonIcon.classList.toggle('hidden', isDark);
-        sunIcon.classList.toggle('hidden', !isDark);
+    if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.classList.add('dark');
+    } else {
+        document.documentElement.classList.remove('dark');
     }
-    
-    // Theme toggle button click handler
-    document.getElementById('theme-switch').addEventListener('click', () => {
-        const isDark = document.documentElement.classList.toggle('dark');
-        localStorage.theme = isDark ? 'dark' : 'light';
-        updateIcons(isDark);
-    });
-    
-    // Listen for system theme changes
-    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-        if (!('theme' in localStorage)) {
-            document.documentElement.classList.toggle('dark', e.matches);
-            updateIcons(e.matches);
+
+    const themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
+    const themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
+
+    // Change the icons inside the button based on previous settings
+    if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        themeToggleLightIcon.classList.remove('hidden');
+    } else {
+        themeToggleDarkIcon.classList.remove('hidden');
+    }
+
+    const themeToggleBtn = document.getElementById('theme-toggle');
+
+    themeToggleBtn.addEventListener('click', function() {
+        // Toggle icons
+        themeToggleDarkIcon.classList.toggle('hidden');
+        themeToggleLightIcon.classList.toggle('hidden');
+
+        // If is set in localStorage
+        if (localStorage.getItem('color-theme')) {
+            if (localStorage.getItem('color-theme') === 'light') {
+                document.documentElement.classList.add('dark');
+                localStorage.setItem('color-theme', 'dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+                localStorage.setItem('color-theme', 'light');
+            }
+        } else {
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.setItem('color-theme', 'light');
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.setItem('color-theme', 'dark');
+            }
         }
     });
-}
-
-// Initialize theme when DOM is loaded
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initTheme);
-} else {
-    initTheme();
-}
 </script>
+
+
 </head>
 <body class="bg-gray-50 min-h-screen">
     <nav class="bg-white border-b border-gray-100">
@@ -131,17 +173,14 @@ if (document.readyState === 'loading') {
                     </a>
                 </div>
                 <div class="flex items-center space-x-6">
-                        <!-- Add this button inside the nav div, in the flex items-center space-x-6 container -->
-<button id="theme-switch" aria-label="Toggle theme" class="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
-    <!-- Moon icon for light mode -->
-    <svg id="moon-icon" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-600 dark:text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-    </svg>
-    <!-- Sun icon for dark mode -->
-    <svg id="sun-icon" xmlns="http://www.w3.org/2000/svg" class="hidden h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-    </svg>
-</button>
+                        <button id="theme-toggle" type="button" class="rounded-lg p-2.5 text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-4 focus:ring-gray-200 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-700">
+                    <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path>
+                    </svg>
+                    <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"></path>
+                    </svg>
+                </button>
                     <a href="#features" data-umami-event="visit features" class="text-sm text-gray-600 hover:text-indigo-600">Features</a>
                     <a href="#playground" data-umami-event="visit playground" class="text-sm text-gray-600 hover:text-indigo-600">Playground</a>
                     <a href="#docs" data-umami-event="Visit docs" class="text-sm text-gray-600 hover:text-indigo-600">Docs</a>
