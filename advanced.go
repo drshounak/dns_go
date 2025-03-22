@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net"
+	"net/http"
+	"net/smtp"
 	"os"
 	"strings"
 	"sync"
@@ -45,6 +49,14 @@ type APIKey struct {
 	UpdatedAt   time.Time
 }
 
+type EmailVerification struct {
+	gorm.Model
+	Email     string    `gorm:"index"`
+	Token     string    `gorm:"index"`
+	ExpiresAt time.Time
+	Used      bool
+}
+
 // Config for multi-server deployment
 type ServerConfig struct {
 	Port          string
@@ -72,11 +84,25 @@ var (
 		dns.TypeNSEC, dns.TypeNSEC3, dns.TypeRRSIG, dns.TypeOPT, dns.TypeTLSA,
 	)
 
-	dnsCache   *cache.Cache
-	ipLimiters = sync.Map{}
-	db         *gorm.DB
+	approvedEmailDomains = []string{
+		"gmail.com", "outlook.com", "hotmail.com", "yahoo.com", "icloud.com",
+		"aol.com", "protonmail.com", "pm.me", "zoho.com", "msn.com",
+		"live.com", "mail.com", "yandex.com", "gmx.com", "tutanota.com",
+	}
+
+	dnsCache    *cache.Cache
+	ipLimiters  = sync.Map{}
+	db          *gorm.DB
 	redisClient *redis.Client
-	config     ServerConfig
+	config      ServerConfig
+
+	ipqsAPIKey   = getEnv("IPQS_API_KEY", "")
+	smtpHost     = getEnv("SMTP_HOST", "smtp.example.com")
+	smtpPort     = getEnv("SMTP_PORT", "587")
+	smtpUsername = getEnv("SMTP_USERNAME", "noreply@example.com")
+	smtpPassword = getEnv("SMTP_PASSWORD", "")
+	smtpFrom     = getEnv("SMTP_FROM", "DNS API Service <noreply@example.com>")
+	siteURL      = getEnv("SITE_URL", "https://dnsapi.example.com")
 )
 
 type RateLimiterWithLastUse struct {
@@ -84,15 +110,15 @@ type RateLimiterWithLastUse struct {
 	lastUse time.Time
 }
 
-// Request structure for authentication and API usage
+// Request structures
 type LoginRequest struct {
 	Email    string `json:"email" binding:"required"`
 	Password string `json:"password" binding:"required"`
 }
 
 type RegisterRequest struct {
-	Email    string `json:"email" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Email    string `json:"email" binding:"required,email"`
+	Password string `json:"password" binding:"required,min=8"`
 }
 
 type APIKeyRequest struct {
@@ -102,18 +128,13 @@ type APIKeyRequest struct {
 func init() {
 	dnsCache = cache.New(10*time.Second, 30*time.Second)
 	
-	// Load configuration
 	config = loadConfig()
-	
-	// Setup database connection
 	setupDatabase()
-	
-	// Setup Redis for distributed rate limiting
 	setupRedis()
 	
-	// Start background tasks
 	go cleanupIPLimiters()
 	go resetDailyQuotas()
+	go cleanupExpiredVerifications()
 }
 
 func loadConfig() ServerConfig {
@@ -151,8 +172,7 @@ func setupDatabase() {
 		panic(fmt.Sprintf("Failed to connect to database: %v", err))
 	}
 	
-	// Auto migrate the schema
-	db.AutoMigrate(&User{}, &APIKey{})
+	db.AutoMigrate(&User{}, &APIKey{}, &EmailVerification{})
 }
 
 func setupRedis() {
@@ -167,23 +187,21 @@ func setupRedis() {
 func main() {
 	r := gin.Default()
 
-	// Set trusted proxies if behind load balancer
 	if config.LoadBalanced {
 		r.SetTrustedProxies([]string{"0.0.0.0/0"})
 	}
 
-	// Public routes
 	r.GET("/", handleHome)
 	r.POST("/api/register", handleRegister)
 	r.POST("/api/login", handleLogin)
+	r.GET("/verify-email", handleVerifyEmail)
+	r.POST("/resend-verification", handleResendVerification)
 	
-	// Limited public access
 	publicAPI := r.Group("/api")
 	publicAPI.Use(publicRateLimitMiddleware())
 	publicAPI.Use(corsMiddleware())
 	publicAPI.GET("/lookup", handlePublicLookup)
 	
-	// Protected routes (require API key)
 	authAPI := r.Group("/api/v1")
 	authAPI.Use(apiKeyAuthMiddleware())
 	authAPI.Use(apiQuotaMiddleware())
@@ -192,7 +210,6 @@ func main() {
 	authAPI.GET("/lookup/:type", handleTypedLookup)
 	authAPI.GET("/lookup/provider/:provider", handleProviderLookup)
 	
-	// User dashboard API (requires session auth)
 	dashboard := r.Group("/dashboard/api")
 	dashboard.Use(sessionAuthMiddleware())
 	dashboard.GET("/keys", handleGetAPIKeys)
@@ -200,7 +217,6 @@ func main() {
 	dashboard.DELETE("/keys/:id", handleDeleteAPIKey)
 	dashboard.GET("/usage", handleGetUsage)
 	
-	// Start server
 	if err := r.Run(":" + config.Port); err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 	}
@@ -208,8 +224,8 @@ func main() {
 
 func handleHome(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"message": "Welcome to DNS API Service",
-		"status": "online",
+		"message":    "Welcome to DNS API Service",
+		"status":     "online",
 		"free_quota": 25,
 		"signup_url": "/api/register",
 	})
@@ -222,25 +238,51 @@ func handleRegister(c *gin.Context) {
 		return
 	}
 	
-	// Check if email already exists
+	if !isApprovedEmailDomain(req.Email) {
+		c.JSON(400, gin.H{"error": "Email domain not accepted. Please use a major email provider."})
+		return
+	}
+	
 	var existingUser User
 	if result := db.Where("email = ?", req.Email).First(&existingUser); result.RowsAffected > 0 {
 		c.JSON(409, gin.H{"error": "Email already registered"})
 		return
 	}
 	
-	// Hash password
+	clientIP := c.ClientIP()
+	if !isValidIP(clientIP) {
+		c.JSON(403, gin.H{"error": "Registration not allowed from your current network. VPNs and datacenter IPs are not permitted."})
+		return
+	}
+	
+	token, err := generateVerificationToken()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to process registration"})
+		return
+	}
+	
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to process registration"})
 		return
 	}
 	
-	// Create user
+	verification := EmailVerification{
+		Email:     req.Email,
+		Token:     token,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		Used:      false,
+	}
+	
+	if err := db.Create(&verification).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to process registration"})
+		return
+	}
+	
 	newUser := User{
 		Email:    req.Email,
 		Password: string(hashedPassword),
-		IsActive: true,
+		IsActive: false,
 	}
 	
 	if err := db.Create(&newUser).Error; err != nil {
@@ -248,17 +290,13 @@ func handleRegister(c *gin.Context) {
 		return
 	}
 	
-	// Generate initial API key
-	apiKey, err := generateAPIKey(newUser.ID, "Default API Key")
-	if err != nil {
-		c.JSON(500, gin.H{"error": "User created but failed to generate API key"})
-		return
+	if err := sendVerificationEmail(req.Email, token); err != nil {
+		fmt.Printf("Failed to send verification email: %v\n", err)
 	}
 	
 	c.JSON(201, gin.H{
-		"message": "Registration successful",
-		"api_key": apiKey,
-		"daily_quota": 2500,
+		"message": "Registration initiated. Please check your email to verify your account.",
+		"email":   req.Email,
 	})
 }
 
@@ -269,27 +307,28 @@ func handleLogin(c *gin.Context) {
 		return
 	}
 	
-	// Find user
 	var user User
 	if result := db.Where("email = ?", req.Email).First(&user); result.RowsAffected == 0 {
 		c.JSON(401, gin.H{"error": "Invalid credentials"})
 		return
 	}
 	
-	// Check password
+	if !user.IsActive {
+		c.JSON(403, gin.H{"error": "Account not activated. Please check your email for the verification link."})
+		return
+	}
+	
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
 		c.JSON(401, gin.H{"error": "Invalid credentials"})
 		return
 	}
 	
-	// Create session token
 	token, err := generateSessionToken()
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to generate session"})
 		return
 	}
 	
-	// Store in Redis with 24h expiry
 	ctx := c.Request.Context()
 	err = redisClient.Set(ctx, "session:"+token, user.ID, 24*time.Hour).Err()
 	if err != nil {
@@ -299,8 +338,92 @@ func handleLogin(c *gin.Context) {
 	
 	c.JSON(200, gin.H{
 		"message": "Login successful",
-		"token": token,
+		"token":   token,
 	})
+}
+
+func handleVerifyEmail(c *gin.Context) {
+	token := c.Query("token")
+	if token == "" {
+		c.JSON(400, gin.H{"error": "Verification token is required"})
+		return
+	}
+	
+	var verification EmailVerification
+	if err := db.Where("token = ? AND used = ? AND expires_at > ?", token, false, time.Now()).First(&verification).Error; err != nil {
+		c.JSON(400, gin.H{"error": "Invalid or expired verification token"})
+		return
+	}
+	
+	var user User
+	if err := db.Where("email = ? AND is_active = ?", verification.Email, false).First(&user).Error; err != nil {
+		c.JSON(404, gin.H{"error": "User not found or already activated"})
+		return
+	}
+	
+	if err := db.Model(&user).Update("is_active", true).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to activate account"})
+		return
+	}
+	
+	if err := db.Model(&verification).Update("used", true).Error; err != nil {
+		fmt.Printf("Failed to mark verification as used: %v\n", err)
+	}
+	
+	apiKey, err := generateAPIKey(user.ID, "Default API Key")
+	if err != nil {
+		c.JSON(500, gin.H{"error": "User activated but failed to generate API key"})
+		return
+	}
+	
+	c.JSON(200, gin.H{
+		"message":     "Email verified and account activated successfully",
+		"api_key":     apiKey,
+		"daily_quota": 2500,
+	})
+}
+
+func handleResendVerification(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+	}
+	
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "Invalid email address"})
+		return
+	}
+	
+	var user User
+	if err := db.Where("email = ? AND is_active = ?", req.Email, false).First(&user).Error; err != nil {
+		c.JSON(200, gin.H{"message": "If your email exists in our system and is not yet verified, a new verification email has been sent."})
+		return
+	}
+	
+	db.Where("email = ?", req.Email).Delete(&EmailVerification{})
+	
+	token, err := generateVerificationToken()
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to process request"})
+		return
+	}
+	
+	verification := EmailVerification{
+		Email:     req.Email,
+		Token:     token,
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+		Used:      false,
+	}
+	
+	if err := db.Create(&verification).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to process request"})
+		return
+	}
+	
+	if err := sendVerificationEmail(req.Email, token); err != nil {
+		fmt.Printf("Failed to send verification email: %v\n", err)
+	}
+	
+	c.JSON(200, gin.H{"message": "If your email exists in our system and is not yet verified, a new verification email has been sent."})
 }
 
 func handleGetAPIKeys(c *gin.Context) {
@@ -324,7 +447,6 @@ func handleCreateAPIKey(c *gin.Context) {
 		return
 	}
 	
-	// Count existing keys
 	var count int64
 	db.Model(&APIKey{}).Where("user_id = ?", userID).Count(&count)
 	if count >= 5 {
@@ -344,8 +466,8 @@ func handleCreateAPIKey(c *gin.Context) {
 	}
 	
 	c.JSON(201, gin.H{
-		"message": "API key created",
-		"api_key": key,
+		"message":     "API key created",
+		"api_key":     key,
 		"daily_quota": 2500,
 	})
 }
@@ -395,7 +517,7 @@ func handleGetUsage(c *gin.Context) {
 	
 	c.JSON(200, gin.H{
 		"total_usage": totalUsage,
-		"keys": keyUsage,
+		"keys":        keyUsage,
 	})
 }
 
@@ -406,17 +528,15 @@ func handlePublicLookup(c *gin.Context) {
 		return
 	}
 	
-	// Perform basic lookup with limited data
-	records, err := performLookup(domain, dnsProviders["google"], basicRecordTypes[:2]) // Just A and AAAA
+	records, err := performLookup(domain, dnsProviders["google"], basicRecordTypes[:2])
 	if err != nil {
 		c.JSON(500, gin.H{"error": "DNS lookup failed"})
 		return
 	}
 	
-	// Add signup message
 	c.JSON(200, gin.H{
-		"data": records,
-		"message": "Free tier limited to 25 queries per day. Sign up for an API key to increase your limit to 2500 queries per day.",
+		"data":       records,
+		"message":    "Free tier limited to 25 queries per day. Sign up for an API key to increase your limit to 2500 queries per day.",
 		"signup_url": "/api/register",
 	})
 }
@@ -440,11 +560,9 @@ func publicRateLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
 		
-		// Get limit from Redis if load balanced
 		ctx := c.Request.Context()
 		key := fmt.Sprintf("ip_limit:%s", ip)
 		
-		// Check if IP has reached limit
 		var count int64
 		var err error
 		
@@ -463,23 +581,18 @@ func publicRateLimitMiddleware() gin.HandlerFunc {
 				return
 			}
 			limiter.lastUse = time.Now()
-			
-			// Update count
 			count = int64(25 - limiter.limiter.Tokens())
 		}
 		
-		// Check if exceeded daily limit (25 for public API)
 		if count >= 25 {
 			c.JSON(429, gin.H{"error": "Daily limit exceeded", "message": "Sign up for an API key to increase your limit to 2500 queries per day"})
 			c.Abort()
 			return
 		}
 		
-		// Increment counter in Redis if load balanced
 		if config.LoadBalanced {
 			pipe := redisClient.Pipeline()
 			pipe.Incr(ctx, key)
-			// Set expiry to end of day if not already set
 			pipe.Expire(ctx, key, time.Until(endOfDay()))
 			_, err = pipe.Exec(ctx)
 			if err != nil {
@@ -506,10 +619,8 @@ func apiKeyAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		
-		// Remove "Bearer " prefix if present
 		apiKey = strings.TrimPrefix(apiKey, "Bearer ")
 		
-		// Find API key in database
 		var key APIKey
 		if err := db.Where("key = ? AND is_active = true", apiKey).First(&key).Error; err != nil {
 			c.JSON(401, gin.H{"error": "Invalid or inactive API key"})
@@ -517,7 +628,6 @@ func apiKeyAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		
-		// Store API key info in context
 		c.Set("apiKey", key)
 		c.Set("userID", key.UserID)
 		
@@ -534,10 +644,8 @@ func sessionAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		
-		// Remove "Bearer " prefix if present
 		token = strings.TrimPrefix(token, "Bearer ")
 		
-		// Get user ID from Redis
 		ctx := c.Request.Context()
 		userID, err := redisClient.Get(ctx, "session:"+token).Int64()
 		if err != nil {
@@ -546,7 +654,6 @@ func sessionAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		
-		// Store user ID in context
 		c.Set("userID", uint(userID))
 		
 		c.Next()
@@ -564,53 +671,41 @@ func apiQuotaMiddleware() gin.HandlerFunc {
 		
 		key := apiKey.(APIKey)
 		
-		// Check if it's a new day, reset count if needed
 		if time.Since(key.LastReset) > 24*time.Hour {
-			// In a load balanced environment, use Redis for atomic update
 			if config.LoadBalanced {
 				ctx := c.Request.Context()
 				redisKey := fmt.Sprintf("apikey_reset:%d", key.ID)
 				
-				// Only reset if not already done by another server
 				if _, err := redisClient.Get(ctx, redisKey).Result(); err == redis.Nil {
-					// Reset counter and update last reset time
 					db.Model(&key).Updates(map[string]interface{}{
 						"count":      0,
 						"last_reset": time.Now(),
 					})
-					
-					// Mark as reset in Redis
 					redisClient.Set(ctx, redisKey, 1, 24*time.Hour)
 				}
 			} else {
-				// Reset counter and update last reset time
 				db.Model(&key).Updates(map[string]interface{}{
 					"count":      0,
 					"last_reset": time.Now(),
 				})
 			}
-			
-			// Refresh key data
 			db.First(&key, key.ID)
 		}
 		
-		// Check if quota exceeded
 		if key.Count >= key.DailyQuota {
 			c.JSON(429, gin.H{
-				"error": "Daily API quota exceeded", 
-				"limit": key.DailyQuota,
+				"error":    "Daily API quota exceeded",
+				"limit":    key.DailyQuota,
 				"reset_at": key.LastReset.Add(24 * time.Hour),
 			})
 			c.Abort()
 			return
 		}
 		
-		// In load balanced environment, use Redis for atomic increment
 		if config.LoadBalanced {
 			ctx := c.Request.Context()
 			redisKey := fmt.Sprintf("apikey_count:%d", key.ID)
 			
-			// Get current count from Redis
 			count, err := redisClient.Get(ctx, redisKey).Int64()
 			if err != nil && err != redis.Nil {
 				c.JSON(500, gin.H{"error": "Quota tracking error"})
@@ -618,24 +713,21 @@ func apiQuotaMiddleware() gin.HandlerFunc {
 				return
 			}
 			
-			// If key doesn't exist, initialize with DB value
 			if err == redis.Nil {
 				redisClient.Set(ctx, redisKey, key.Count, 24*time.Hour)
 				count = int64(key.Count)
 			}
 			
-			// Check quota against Redis value
 			if count >= int64(key.DailyQuota) {
 				c.JSON(429, gin.H{
-					"error": "Daily API quota exceeded", 
-					"limit": key.DailyQuota,
+					"error":    "Daily API quota exceeded",
+					"limit":    key.DailyQuota,
 					"reset_at": key.LastReset.Add(24 * time.Hour),
 				})
 				c.Abort()
 				return
 			}
 			
-			// Increment count in Redis
 			newCount, err := redisClient.Incr(ctx, redisKey).Result()
 			if err != nil {
 				c.JSON(500, gin.H{"error": "Quota tracking error"})
@@ -643,12 +735,10 @@ func apiQuotaMiddleware() gin.HandlerFunc {
 				return
 			}
 			
-			// Periodically sync Redis count to DB (every 10 requests)
 			if newCount%10 == 0 {
 				db.Model(&key).Update("count", newCount)
 			}
 		} else {
-			// Increment count directly in DB
 			db.Model(&key).Update("count", key.Count+1)
 		}
 		
@@ -660,7 +750,7 @@ func getIPLimiter(ip string) *RateLimiterWithLastUse {
 	limiter, exists := ipLimiters.Load(ip)
 	if !exists {
 		newLimiter := &RateLimiterWithLastUse{
-			limiter: rate.NewLimiter(rate.Limit(2), 25), // 25 requests at 2 per second
+			limiter: rate.NewLimiter(rate.Limit(2), 25),
 			lastUse: time.Now(),
 		}
 		limiter, _ = ipLimiters.LoadOrStore(ip, newLimiter)
@@ -683,27 +773,22 @@ func cleanupIPLimiters() {
 }
 
 func resetDailyQuotas() {
-	// Only run on master server if in load-balanced mode
 	if config.LoadBalanced && !config.MasterServer {
 		return
 	}
 	
 	for {
-		// Sleep until next day (midnight)
 		now := time.Now()
 		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
 		time.Sleep(time.Until(nextMidnight))
 		
-		// Reset all API key counters
 		db.Model(&APIKey{}).Updates(map[string]interface{}{
 			"count":      0,
 			"last_reset": time.Now(),
 		})
 		
-		// If using Redis, clear all API key count keys
 		if config.LoadBalanced {
 			ctx := redisClient.Context()
-			// Get all apikey_count:* keys
 			iter := redisClient.Scan(ctx, 0, "apikey_count:*", 100).Iterator()
 			for iter.Next(ctx) {
 				redisClient.Del(ctx, iter.Val())
@@ -712,18 +797,22 @@ func resetDailyQuotas() {
 	}
 }
 
+func cleanupExpiredVerifications() {
+	for {
+		time.Sleep(6 * time.Hour)
+		db.Delete(&EmailVerification{}, "expires_at < ? OR used = ?", time.Now(), true)
+	}
+}
+
 func generateAPIKey(userID uint, description string) (string, error) {
-	// Generate random bytes
 	b := make([]byte, 32)
 	_, err := rand.Read(b)
 	if err != nil {
 		return "", err
 	}
 	
-	// Encode to base64
 	key := base64.StdEncoding.EncodeToString(b)
 	
-	// Create API key in database
 	apiKey := APIKey{
 		UserID:      userID,
 		Key:         key,
@@ -750,6 +839,15 @@ func generateSessionToken() (string, error) {
 	return base64.StdEncoding.EncodeToString(b), nil
 }
 
+func generateVerificationToken() (string, error) {
+	b := make([]byte, 32)
+	_, err := rand.Read(b)
+	if err != nil {
+		return "", err
+	}
+	return base64.URLEncoding.EncodeToString(b), nil
+}
+
 func maskAPIKey(key string) string {
 	if len(key) <= 8 {
 		return key
@@ -760,6 +858,148 @@ func maskAPIKey(key string) string {
 func endOfDay() time.Time {
 	now := time.Now()
 	return time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 999999999, now.Location())
+}
+
+func isApprovedEmailDomain(email string) bool {
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return false
+	}
+	
+	domain := strings.ToLower(parts[1])
+	
+	for _, approved := range approvedEmailDomains {
+		if domain == approved {
+			return true
+		}
+	}
+	
+	return false
+}
+
+func isValidIP(ip string) bool {
+	if ipqsAPIKey == "" {
+		return !isDatacenterIP(ip)
+	}
+	
+	url := fmt.Sprintf("https://www.ipqualityscore.com/api/json/ip/%s/%s", ipqsAPIKey, ip)
+	
+	resp, err := http.Get(url)
+	if err != nil {
+		fmt.Printf("Error checking IP: %v\n", err)
+		return !isDatacenterIP(ip)
+	}
+	defer resp.Body.Close()
+	
+	var result struct {
+		Proxy      bool `json:"proxy"`
+		VPN        bool `json:"vpn"`
+		TOR        bool `json:"tor"`
+		Datacenter bool `json:"is_datacenter"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		fmt.Printf("Error parsing IP check response: %v\n", err)
+		return !isDatacenterIP(ip)
+	}
+	
+	if result.Proxy || result.VPN || result.TOR || result.Datacenter {
+		return false
+	}
+	
+	return true
+}
+
+func isDatacenterIP(ipStr string) bool {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	
+	datacenterRanges := []string{
+		"3.0.0.0/8", "13.0.0.0/8", "34.0.0.0/8", "35.0.0.0/8", "50.0.0.0/8", "52.0.0.0/8",
+		"104.196.0.0/14", "104.42.0.0/16", "157.56.0.0/16", "168.61.0.0/16", "169.254.0.0/16",
+		"192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8",
+	}
+	
+	for _, cidr := range datacenterRanges {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	
+	return false
+}
+
+func sendVerificationEmail(email, token string) error {
+	emailTemplate := `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Verify Your DNS API Account</title>
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; margin: 0; padding: 20px; color: #333;">
+    <div style="max-width: 600px; margin: 0 auto; background: #f9f9f9; border: 1px solid #eee; border-radius: 5px; padding: 20px;">
+        <h1 style="color: #2c3e50; margin-top: 0;">Verify Your Email Address</h1>
+        <p>Thank you for registering for a DNS API account. To complete your registration, please verify your email address by clicking the button below:</p>
+        <div style="text-align: center; margin: 30px 0;">
+            <a href="{{.VerificationURL}}" style="background-color: #3498db; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">Verify Email Address</a>
+        </div>
+        <p>Alternatively, you can copy and paste the following URL into your browser:</p>
+        <p style="word-break: break-all; background: #eee; padding: 10px; border-radius: 4px;">{{.VerificationURL}}</p>
+        <p>This link will expire in 24 hours.</p>
+        <p>If you didn't request this verification, please ignore this email.</p>
+        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+        <p style="font-size: 12px; color: #777;">This is an automated message, please do not reply to this email.</p>
+    </div>
+</body>
+</html>
+`
+	
+	tmpl, err := template.New("verification").Parse(emailTemplate)
+	if err != nil {
+		return err
+	}
+	
+	verificationURL := fmt.Sprintf("%s/verify-email?token=%s", siteURL, token)
+	
+	data := struct {
+		VerificationURL string
+	}{
+		VerificationURL: verificationURL,
+	}
+	
+	var emailBody bytes.Buffer
+	if err := tmpl.Execute(&emailBody, data); err != nil {
+		return err
+	}
+	
+	headers := make(map[string]string)
+	headers["From"] = smtpFrom
+	headers["To"] = email
+	headers["Subject"] = "Verify Your DNS API Account"
+	headers["MIME-Version"] = "1.0"
+	headers["Content-Type"] = "text/html; charset=UTF-8"
+	
+	var message string
+	for key, value := range headers {
+		message += fmt.Sprintf("%s: %s\r\n", key, value)
+	}
+	message += "\r\n" + emailBody.String()
+	
+	auth := smtp.PlainAuth("", smtpUsername, smtpPassword, smtpHost)
+	return smtp.SendMail(
+		smtpHost+":"+smtpPort,
+		auth,
+		smtpUsername,
+		[]string{email},
+		[]byte(message),
+	)
 }
 
 func handleLookup(c *gin.Context) {
